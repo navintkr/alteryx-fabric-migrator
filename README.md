@@ -1,5 +1,9 @@
 # alteryx2fabric
 
+[![Release](https://img.shields.io/github/v/release/navintkr/alteryx-fabric-migrator?display_name=tag&sort=semver)](https://github.com/navintkr/alteryx-fabric-migrator/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+
 A toolkit for migrating Alteryx workflows (`.yxmd`) to Microsoft Fabric (Lakehouse + Notebooks + Data Pipelines), with a medallion (Bronze / Silver / Gold) architecture.
 
 The toolkit has two complementary halves:
@@ -11,35 +15,56 @@ The toolkit has two complementary halves:
 
 Use the CLI for everything that should be automated. Use the Skill (via a Copilot-aware editor) for the parts that need judgment — interpreting custom formulas, mapping macros, deciding when to use a Notebook vs. a Dataflow Gen2.
 
+## Install
+
+**From the latest GitHub Release (recommended):**
+
+```powershell
+pip install https://github.com/navintkr/alteryx-fabric-migrator/releases/download/v0.1.0/alteryx2fabric-0.1.0-py3-none-any.whl
+```
+
+**From source (editable, for development):**
+
+```powershell
+git clone https://github.com/navintkr/alteryx-fabric-migrator.git
+cd alteryx-fabric-migrator
+pipx install --editable .
+```
+
+Verify:
+
+```powershell
+a2f --help
+```
+
 ## Quick start
 
 ```powershell
-# 1. Install (editable)
-pipx install --editable .
-
-# 2. Authenticate (Fabric uses Power BI auth resource)
+# 1. Install (see Install section above) and authenticate
 az login --tenant <your-tenant-id>
 
-# 3. Initialise a migration project
+# 2. Initialise a migration project
 a2f init my-migration --workspace-id <fabric-ws-guid>
 cd my-migration
 
-# 4. Parse an Alteryx workflow into a JSON intermediate representation
+# 3. Parse an Alteryx workflow into a JSON intermediate representation
 a2f parse path/to/workflow.yxmd --out ir.json
 
-# 5. Provision Fabric assets (Lakehouse + Files/Input/ folder)
+# 4. Provision Fabric assets (Lakehouse + Files/Input/ folder)
 a2f provision --lakehouse MyMigration_LH
 
-# 6. Upload source files to OneLake
+# 5. Upload source files to OneLake
 a2f upload ./inputs --to Input
 
-# 7. Deploy generated Bronze/Silver/Gold notebooks + pipeline
+# 6. Deploy generated Bronze/Silver/Gold notebooks + pipeline
 a2f deploy
 
-# 8. Run the pipeline end-to-end and validate against reference outputs
+# 7. Run the pipeline end-to-end and validate against reference outputs
 a2f run --pipeline PL_Migration_Run
 a2f validate --ref ./reference_outputs --gen ./fabric_outputs
 ```
+
+> **Tip:** Just want to scope a migration without any Azure setup? Skip straight to [Portfolio analysis](#portfolio-analysis-batch) — it runs entirely offline on a folder of `.yxmd` files.
 
 ## AI-assisted generation
 
