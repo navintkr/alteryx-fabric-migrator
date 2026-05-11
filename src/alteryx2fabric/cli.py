@@ -153,7 +153,10 @@ def upload(local_dir: str, remote_prefix: str):
 @click.option("--inputs-config", default=None, help="JSON file describing bronze inputs.")
 @click.option("--prefix", default="Nb", help="Notebook name prefix.")
 @click.option("--pipeline-name", default=None, help="Data Pipeline name (default: PL_<project>_Run).")
-def deploy(inputs_config: str | None, prefix: str, pipeline_name: str | None):
+@click.option("--ir", "ir_path", default="ir.json", help="IR JSON path (for pipeline parameters).")
+@click.option("--no-parameters", is_flag=True, help="Skip parameterizing the pipeline from the IR.")
+def deploy(inputs_config: str | None, prefix: str, pipeline_name: str | None,
+           ir_path: str, no_parameters: bool):
     """Deploy Bronze/Silver/Gold notebooks and the orchestration pipeline."""
     client = _get_client_or_exit()
     st = _state.load(_project_root())
@@ -168,6 +171,19 @@ def deploy(inputs_config: str | None, prefix: str, pipeline_name: str | None):
         inputs = [{"table": "example", "file": "example.csv"}]
         click.secho("No --inputs-config provided; deploying with a placeholder bronze cell.", fg="yellow")
 
+    # Pull pipeline parameters from the IR (if present)
+    parameters: list[dict] = []
+    if not no_parameters and Path(ir_path).exists():
+        try:
+            ir = json.loads(Path(ir_path).read_text(encoding="utf-8"))
+            parameters = ir.get("parameters", []) or []
+            if parameters:
+                click.echo(f"Detected {len(parameters)} parameter(s) from {ir_path}:")
+                for p in parameters:
+                    click.echo(f"  - {p['name']} ({p['source']}:{p['type']}) default={p.get('default','')!r}")
+        except Exception as e:
+            click.secho(f"Could not load parameters from {ir_path}: {e}", fg="yellow")
+
     nb_ids = deploy_default_notebooks(client, inputs, lh_id, lh_name, prefix=prefix)
     for name, _id in nb_ids.items():
         click.echo(f"  notebook {name}: {_id}")
@@ -178,16 +194,22 @@ def deploy(inputs_config: str | None, prefix: str, pipeline_name: str | None):
         ("Silver Transform", nb_ids[f"{prefix}_Silver_Transform"]),
         ("Gold Outputs", nb_ids[f"{prefix}_Gold_Outputs"]),
     ]
-    pid = deploy_pipeline(client, pl_name, chain)
+    pid = deploy_pipeline(client, pl_name, chain, parameters=parameters)
     click.secho(f"Pipeline {pl_name}: {pid}", fg="green")
-    _state.update({"notebooks": nb_ids, "pipeline_name": pl_name, "pipeline_id": pid}, _project_root())
+    _state.update(
+        {"notebooks": nb_ids, "pipeline_name": pl_name, "pipeline_id": pid,
+         "parameters": parameters},
+        _project_root(),
+    )
 
 
 # ----------------------------- run -----------------------------
 @main.command()
 @click.option("--pipeline", "pipeline_name", default=None, help="Pipeline name (default: from state).")
 @click.option("--timeout", default=1800, help="Timeout in seconds.")
-def run(pipeline_name: str | None, timeout: int):
+@click.option("--param", "params", multiple=True,
+              help="Pipeline parameter override as name=value. Repeatable.")
+def run(pipeline_name: str | None, timeout: int, params: tuple[str, ...]):
     """Trigger the pipeline and stream status."""
     client = _get_client_or_exit()
     st = _state.load(_project_root())
@@ -200,8 +222,30 @@ def run(pipeline_name: str | None, timeout: int):
     if not pid:
         click.secho("No pipeline id — run `a2f deploy` first or pass --pipeline.", fg="red"); sys.exit(2)
 
+    # Parse --param name=value pairs, coerce against pipeline-declared types
+    runtime_params: dict = {}
+    if params:
+        declared = {p["name"]: p for p in (st.get("parameters") or [])}
+        for kv in params:
+            if "=" not in kv:
+                click.secho(f"--param expects name=value, got {kv!r}", fg="red"); sys.exit(2)
+            k, v = kv.split("=", 1)
+            decl = declared.get(k, {})
+            t = decl.get("type", "string")
+            if t == "int":
+                runtime_params[k] = int(v)
+            elif t == "bool":
+                runtime_params[k] = v.strip().lower() in {"1", "true", "yes"}
+            elif t == "array":
+                runtime_params[k] = [s for s in v.split(",") if s]
+            else:
+                runtime_params[k] = v
+        click.echo(f"Runtime parameters: {runtime_params}")
+
     click.echo(f"Triggering pipeline {pid} ...")
-    status_url, progress, final = run_pipeline_and_wait(client, pid, timeout_s=timeout)
+    status_url, progress, final = run_pipeline_and_wait(
+        client, pid, timeout_s=timeout, parameters=runtime_params or None
+    )
     for elapsed, status in progress:
         click.echo(f"  [{elapsed}s] status={status}")
     click.echo("Final:")

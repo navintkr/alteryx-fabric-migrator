@@ -31,11 +31,13 @@ class WorkflowReport:
     formula_count: int
     join_count: int
     container_count: int
-    top_plugins: str   # "Formula:12, Filter:8, Join:5"
-    inputs: str        # ";"-joined
-    outputs: str       # ";"-joined
+    parameter_count: int
+    parameters: str    # ";"-joined name(source:type=default)
+    top_plugins: str
+    inputs: str
+    outputs: str
     complexity_score: int
-    effort: str        # S / M / L / XL
+    effort: str
     structure_hash: str
     error: str = ""
 
@@ -80,6 +82,7 @@ def analyze_one(path: Path) -> WorkflowReport:
             name=path.name, path=str(path), size_bytes=path.stat().st_size,
             tool_count=0, connection_count=0, input_count=0, output_count=0,
             macro_count=0, formula_count=0, join_count=0, container_count=0,
+            parameter_count=0, parameters="",
             top_plugins="", inputs="", outputs="", complexity_score=0,
             effort="S", structure_hash="", error=str(e)[:200],
         )
@@ -92,12 +95,18 @@ def analyze_one(path: Path) -> WorkflowReport:
     container_count = counter.get("ContainerTool", 0)
     top = ", ".join(f"{p}:{n}" for p, n in counter.most_common(5))
 
+    params = ir.get("parameters", []) or []
+    param_summary = ";".join(
+        f"{p['name']}({p['source']}:{p['type']}={p.get('default','')})" for p in params
+    )
+
     score = (
         len(tools)
         + len(conns) // 2
         + formula_count * 2
         + join_count * 3
         + macro_count * 5
+        + len(params)
     )
 
     return WorkflowReport(
@@ -112,6 +121,8 @@ def analyze_one(path: Path) -> WorkflowReport:
         formula_count=formula_count,
         join_count=join_count,
         container_count=container_count,
+        parameter_count=len(params),
+        parameters=param_summary,
         top_plugins=top,
         inputs=";".join(i["file"] for i in ir.get("inputs", [])),
         outputs=";".join(o["file"] for o in ir.get("outputs", [])),
@@ -271,9 +282,21 @@ def write_reports(
         for c in clusters
     ]
 
+    # Flatten parameters across all workflows (one row per param)
+    param_rows: list[dict] = []
+    for r in reports:
+        # Re-parse to avoid carrying the full IR through the data class
+        try:
+            from .parameters import detect_parameters, params_to_rows
+            ps = detect_parameters(r.path)
+            param_rows.extend(params_to_rows(ps, r.name))
+        except Exception:
+            pass
+
     p1 = out_dir / "workflow_report.csv"; _write_csv(report_rows, p1); written["report_csv"] = p1
     p2 = out_dir / "workflow_dependencies.csv"; _write_csv(edge_rows, p2); written["dependencies_csv"] = p2
     p3 = out_dir / "workflow_duplicates.csv"; _write_csv(cluster_rows, p3); written["duplicates_csv"] = p3
+    p_params = out_dir / "workflow_parameters.csv"; _write_csv(param_rows, p_params); written["parameters_csv"] = p_params
 
     if write_xlsx:
         try:
@@ -283,6 +306,7 @@ def write_reports(
                 pd.DataFrame(report_rows).to_excel(xw, sheet_name="Report", index=False)
                 pd.DataFrame(edge_rows).to_excel(xw, sheet_name="Dependencies", index=False)
                 pd.DataFrame(cluster_rows).to_excel(xw, sheet_name="Duplicates", index=False)
+                pd.DataFrame(param_rows).to_excel(xw, sheet_name="Parameters", index=False)
             written["xlsx"] = xlsx_path
         except Exception:
             pass

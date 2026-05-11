@@ -84,10 +84,17 @@ class FabricClient:
         return self.create_item({"displayName": name, "type": "Lakehouse"})
 
     # ---------- jobs / pipelines ----------
-    def run_pipeline(self, pipeline_id: str) -> str:
-        """Trigger a Data Pipeline and return the polling URL (Location header)."""
+    def run_pipeline(self, pipeline_id: str, parameters: dict | None = None) -> str:
+        """Trigger a Data Pipeline and return the polling URL (Location header).
+
+        `parameters` is an optional {name: value} dict matching the pipeline's
+        defined parameters; values may be str/int/bool/list.
+        """
         url = f"/workspaces/{self.ws}/items/{pipeline_id}/jobs/instances?jobType=Pipeline"
-        r = self._post(url)
+        body = None
+        if parameters:
+            body = {"executionData": {"parameters": parameters}}
+        r = self._post(url, json_body=body)
         if r.status_code not in (200, 202):
             raise RuntimeError(f"run_pipeline failed {r.status_code}: {r.text}")
         loc = r.headers.get("Location")

@@ -105,7 +105,18 @@ def parse_yxmd(path: str | Path) -> dict:
         "connections": connections,
         "inputs": inputs,
         "outputs": outputs,
+        "parameters": _params_for_ir(path),
     }
+
+
+def _params_for_ir(path: str | Path) -> list[dict]:
+    """Inline import to avoid a circular dependency with parameters.py."""
+    from .parameters import detect_parameters
+    from dataclasses import asdict
+    try:
+        return [asdict(p) for p in detect_parameters(path)]
+    except Exception:
+        return []
 
 
 def _find_file_in_config(cfg: Any) -> str | None:

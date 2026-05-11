@@ -84,6 +84,22 @@ Outputs in `./analysis/`:
 
 Tune near-duplicate sensitivity with `--near-threshold 0.85` (default 0.9).
 
+## Workflow parameterization
+
+Alteryx workflows often expose runtime knobs through **user constants**, **question constants** (`%Question.X%`), or **interface tools** (TextBox, Date, DropDown, NumericUpDown, etc.). The toolkit detects these automatically and surfaces them in three places:
+
+1. **`a2f parse`** — the IR (`ir.json`) now includes a `parameters` array.
+2. **`a2f analyze`** — adds a `parameter_count` / `parameters` column to the workflow report and a dedicated `workflow_parameters.csv` (and Excel sheet) listing every parameter across the portfolio.
+3. **`a2f deploy`** — automatically creates matching **Fabric Data Pipeline parameters** (with type and default) and wires each notebook activity to receive them via `@pipeline().parameters.<Name>`.
+
+At run time, override any parameter with `--param`:
+
+```powershell
+a2f run --param RegionCode=EU --param AsOfDate=2024-12-31 --param BatchSize=1000
+```
+
+Skip parameterization for a workflow with `a2f deploy --no-parameters`.
+
 ## What the toolkit does NOT do
 
 - It does not **autonomously** translate every Alteryx formula. The semantic gap (Alteryx expression language, macros, spatial tools, R/Python tools) is what the **Skill** is for — point Copilot at your YXMD with this skill loaded.
