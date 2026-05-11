@@ -41,6 +41,29 @@ a2f run --pipeline PL_Migration_Run
 a2f validate --ref ./reference_outputs --gen ./fabric_outputs
 ```
 
+## AI-assisted generation
+
+The CLI can call a frontier model (Claude Opus 4-class or your choice) to draft notebook bodies from the parsed IR. Auth via GitHub Models (uses `GITHUB_TOKEN` or `gh auth token`) or Anthropic API directly (`ANTHROPIC_API_KEY`).
+
+```powershell
+# Generate Bronze / Silver / Gold notebook bodies from ir.json
+a2f generate bronze --inputs ./inputs --out notebooks/nb_bronze.py
+a2f generate silver --out notebooks/nb_silver.py
+a2f generate gold   --out notebooks/nb_gold.py
+
+# Override provider / model
+a2f generate --provider anthropic --model claude-opus-4-20250514 silver
+
+# Explain one Alteryx tool
+a2f explain 37
+
+# Patch a notebook from a validate diff report
+a2f validate --ref ref --gen gen > diff.txt
+a2f fix --notebook notebooks/nb_silver.py --diff diff.txt
+```
+
+The system prompt embeds the skill's hard rules (Delta column mapping, year-9999, NULL arithmetic, etc.) so generated code follows them by default.
+
 ## What the toolkit does NOT do
 
 - It does not **autonomously** translate every Alteryx formula. The semantic gap (Alteryx expression language, macros, spatial tools, R/Python tools) is what the **Skill** is for — point Copilot at your YXMD with this skill loaded.

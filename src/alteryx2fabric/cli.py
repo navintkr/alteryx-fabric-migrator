@@ -254,5 +254,95 @@ def validate(ref_dir: str, gen_dir: str, atol: float):
         sys.exit(1)
 
 
+# ----------------------------- AI commands -----------------------------
+def _llm(provider: str, model: str | None):
+    from .ai import LLMClient
+    return LLMClient(provider=provider, model=model)
+
+
+def _load_ir(ir_path: str) -> dict:
+    p = Path(ir_path)
+    if not p.exists():
+        click.secho(f"IR not found at {ir_path}. Run `a2f parse <yxmd> --out ir.json` first.", fg="red")
+        sys.exit(2)
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+@main.group()
+@click.option("--provider", type=click.Choice(["github", "anthropic"]), default="github",
+              help="LLM provider. github = GitHub Models (uses GITHUB_TOKEN/gh auth).")
+@click.option("--model", default=None, help="Model id override (e.g. anthropic/claude-opus-4).")
+@click.option("--ir", "ir_path", default="ir.json", help="Path to IR JSON from `a2f parse`.")
+@click.pass_context
+def generate(ctx, provider, model, ir_path):
+    """AI-assisted notebook generation."""
+    ctx.ensure_object(dict)
+    ctx.obj["llm"] = _llm(provider, model)
+    ctx.obj["ir"] = _load_ir(ir_path)
+
+
+@generate.command("bronze")
+@click.option("--inputs", "inputs_dir", default="inputs", help="Local inputs directory.")
+@click.option("--out", "out_path", default="notebooks/nb_bronze.py", help="Output file.")
+@click.pass_context
+def generate_bronze_cmd(ctx, inputs_dir, out_path):
+    """Generate the Bronze notebook body from the IR + local input headers."""
+    from .generate import generate_bronze
+    code = generate_bronze(ctx.obj["ir"], Path(inputs_dir), ctx.obj["llm"])
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(out_path).write_text(code, encoding="utf-8")
+    click.echo(f"Wrote {out_path} ({len(code)} chars)")
+
+
+@generate.command("silver")
+@click.option("--out", "out_path", default="notebooks/nb_silver.py")
+@click.pass_context
+def generate_silver_cmd(ctx, out_path):
+    """Generate the Silver notebook body — Alteryx tools -> pandas/PySpark."""
+    from .generate import generate_silver
+    code = generate_silver(ctx.obj["ir"], ctx.obj["llm"])
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(out_path).write_text(code, encoding="utf-8")
+    click.echo(f"Wrote {out_path} ({len(code)} chars)")
+
+
+@generate.command("gold")
+@click.option("--out", "out_path", default="notebooks/nb_gold.py")
+@click.pass_context
+def generate_gold_cmd(ctx, out_path):
+    """Generate the Gold notebook body — final outputs from silver tables."""
+    from .generate import generate_gold
+    code = generate_gold(ctx.obj["ir"], ctx.obj["llm"])
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(out_path).write_text(code, encoding="utf-8")
+    click.echo(f"Wrote {out_path} ({len(code)} chars)")
+
+
+@main.command()
+@click.argument("tool_id")
+@click.option("--provider", type=click.Choice(["github", "anthropic"]), default="github")
+@click.option("--model", default=None)
+@click.option("--ir", "ir_path", default="ir.json")
+def explain(tool_id, provider, model, ir_path):
+    """Plain-English explanation of one Alteryx tool from the IR."""
+    from .generate import explain_tool
+    ir = _load_ir(ir_path)
+    click.echo(explain_tool(ir, tool_id, _llm(provider, model)))
+
+
+@main.command()
+@click.option("--notebook", "nb_path", required=True, help="Path to notebook .py to patch.")
+@click.option("--diff", "diff_path", required=True, help="Path to validate report (text).")
+@click.option("--provider", type=click.Choice(["github", "anthropic"]), default="github")
+@click.option("--model", default=None)
+def fix(nb_path, diff_path, provider, model):
+    """Patch a notebook to resolve a validation diff."""
+    from .generate import fix_from_diff
+    diff_text = Path(diff_path).read_text(encoding="utf-8")
+    patched = fix_from_diff(Path(nb_path), diff_text, _llm(provider, model))
+    Path(nb_path).write_text(patched, encoding="utf-8")
+    click.echo(f"Patched {nb_path} ({len(patched)} chars)")
+
+
 if __name__ == "__main__":
     main()
