@@ -1,0 +1,21 @@
+# Build artefacts
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Per-project state created by `a2f init`
+.a2f/
+
+# Local outputs
+fabric_out/
+local_out/
+*.parquet
+!examples/**/*.parquet
+
+# Editor
+.vscode/
+.idea/

@@ -1,0 +1,216 @@
+"""Notebook builders: produce Fabric Synapse-PySpark `.ipynb` payloads with
+the configured Lakehouse attached as the default lakehouse.
+
+The toolkit ships three scaffolds: bronze (ingest Excel/CSV), silver
+(transform — placeholder body), gold (export results to Excel + Delta).
+
+These scaffolds embed the *gotchas* learned from real engagements as default
+behaviour:
+- Delta column mapping enabled (allows names with spaces / special chars)
+- Datetime serialised via Python `datetime` (handles year-9999 sentinels)
+- timestampNtz Delta feature avoided
+"""
+from __future__ import annotations
+
+from typing import Iterable
+
+
+def build_ipynb(
+    cells: Iterable[tuple[str, str]],
+    workspace_id: str,
+    lakehouse_id: str,
+    lakehouse_name: str,
+) -> dict:
+    """Build a Fabric notebook dict. `cells` is an iterable of (kind, source)."""
+    nb_cells = []
+    for kind, src in cells:
+        cell = {
+            "metadata": {},
+            "source": src.splitlines(keepends=True),
+        }
+        if kind == "markdown":
+            cell["cell_type"] = "markdown"
+        else:
+            cell["cell_type"] = "code"
+            cell["execution_count"] = None
+            cell["outputs"] = []
+        nb_cells.append(cell)
+
+    return {
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {
+            "kernelspec": {"name": "synapse_pyspark", "display_name": "Synapse PySpark"},
+            "language_info": {"name": "python"},
+            "microsoft": {
+                "language": "python",
+                "language_group": "synapse_pyspark",
+                "ms_spell_check": {"ms_spell_check_language": "en"},
+            },
+            "trident": {
+                "lakehouse": {
+                    "default_lakehouse": lakehouse_id,
+                    "default_lakehouse_name": lakehouse_name,
+                    "default_lakehouse_workspace_id": workspace_id,
+                    "known_lakehouses": [{"id": lakehouse_id}],
+                }
+            },
+        },
+        "cells": nb_cells,
+    }
+
+
+# Common helper cell used by every notebook (write parquet-then-delta with
+# column mapping enabled, plus datetime safeguards).
+COMMON_HELPERS = r'''import os, json
+import pandas as pd
+import numpy as np
+from pyspark.sql import SparkSession
+
+spark = SparkSession.builder.getOrCreate()
+
+# --- Delta defaults so we can use Alteryx-style column names (spaces etc.) ---
+spark.conf.set("spark.databricks.delta.properties.defaults.columnMapping.mode", "name")
+spark.conf.set("spark.databricks.delta.properties.defaults.minReaderVersion", "2")
+spark.conf.set("spark.databricks.delta.properties.defaults.minWriterVersion", "5")
+
+STAGE_DIR = "/lakehouse/default/Files/_stage"
+os.makedirs(STAGE_DIR, exist_ok=True)
+
+
+def _fmt_dt(v):
+    """Stringify a datetime in a way that survives year-9999 sentinels.
+    pandas datetime64[ns] cannot represent years > 2262; we rely on Python
+    `datetime` objects (object dtype) and emit ISO-like strings for Delta.
+    """
+    if v is None or pd.isna(v):
+        return None
+    if hasattr(v, "strftime"):
+        try:
+            return v.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return None
+    s = str(v)
+    return s if s and s != "NaT" else None
+
+
+def write_delta(pdf: pd.DataFrame, table_name: str, stage_subdir: str = "default") -> None:
+    """Pandas -> parquet stage -> Spark -> Delta table.
+
+    Going via parquet avoids `spark.createDataFrame(pandas_df)` flakiness
+    on dataframes that contain Python datetime objects mixed with None.
+    """
+    pdf2 = pdf.copy()
+    for c in pdf2.columns:
+        if pdf2[c].dtype == "object":
+            # Datetime-likes (Python datetime) and strings both flow through here.
+            if any(hasattr(v, "strftime") for v in pdf2[c].dropna().head(20)):
+                pdf2[c] = pdf2[c].map(_fmt_dt).astype("string")
+            else:
+                pdf2[c] = pdf2[c].astype("string")
+        elif pd.api.types.is_datetime64_any_dtype(pdf2[c]):
+            # Pandas datetime64 -> string to avoid timestampNtz Delta feature.
+            pdf2[c] = pdf2[c].map(_fmt_dt).astype("string")
+    pdf2 = pdf2.astype(object).where(pdf2.notna(), None)
+
+    stage_dir = f"{STAGE_DIR}/{stage_subdir}"
+    os.makedirs(stage_dir, exist_ok=True)
+    pq = f"{stage_dir}/{table_name}.parquet"
+    if os.path.exists(pq):
+        os.remove(pq)
+    pdf2.to_parquet(pq, index=False)
+    sdf = spark.read.parquet(f"file://{pq}")
+    (sdf.write.mode("overwrite")
+        .option("overwriteSchema", "true")
+        .option("delta.columnMapping.mode", "name")
+        .option("delta.minReaderVersion", "2")
+        .option("delta.minWriterVersion", "5")
+        .format("delta").saveAsTable(table_name))
+    print(f"wrote {table_name}: {sdf.count()} rows, {len(sdf.columns)} cols")
+'''
+
+
+def bronze_cells(
+    inputs: list[dict],
+    read_options: dict | None = None,
+) -> list[tuple[str, str]]:
+    """inputs: list of {table, file, sheet, header} dicts."""
+    cells: list[tuple[str, str]] = [
+        ("markdown", "# Bronze ingest\nReads source files from `Files/Input/` and writes Delta tables under `bronze_*`."),
+        ("code", COMMON_HELPERS),
+    ]
+    src_lines = ['INPUT_DIR = "/lakehouse/default/Files/Input"']
+    for inp in inputs:
+        table = inp["table"]
+        file_ = inp["file"]
+        sheet = inp.get("sheet")
+        header = inp.get("header", 0)
+        if file_.lower().endswith((".xlsx", ".xls")):
+            sheet_arg = f', sheet_name="{sheet}"' if sheet else ""
+            src_lines.append(
+                f'\n# {table}\n'
+                f'_pdf = pd.read_excel(f"{{INPUT_DIR}}/{file_}", header={header}{sheet_arg})\n'
+                f'write_delta(_pdf, "bronze_{table}", "bronze")'
+            )
+        elif file_.lower().endswith(".csv"):
+            src_lines.append(
+                f'\n# {table}\n'
+                f'_pdf = pd.read_csv(f"{{INPUT_DIR}}/{file_}")\n'
+                f'write_delta(_pdf, "bronze_{table}", "bronze")'
+            )
+        else:
+            src_lines.append(
+                f'\n# {table} -- unrecognised format; replace with appropriate reader\n'
+                f'# _pdf = pd.read_xxx(f"{{INPUT_DIR}}/{file_}")\n'
+                f'# write_delta(_pdf, "bronze_{table}", "bronze")'
+            )
+    cells.append(("code", "\n".join(src_lines)))
+    return cells
+
+
+SILVER_PLACEHOLDER = r'''# Silver transform
+#
+# This cell is a scaffold. Replace the body with the Alteryx workflow logic
+# (joins, formulas, multi-row, crosstab, ...). The Skill that ships with this
+# toolkit (skill/instructions/formula-mapping.md) has Python equivalents for
+# every common Alteryx tool.
+
+# Example pattern: read bronze, transform, write silver.
+src = spark.table("bronze_example").toPandas()
+
+# ... transform using pandas / numpy ...
+result = src.copy()
+
+write_delta(result, "silver_example", "silver")
+'''
+
+
+def silver_cells() -> list[tuple[str, str]]:
+    return [
+        ("markdown", "# Silver transform\nApplies the migrated Alteryx business logic and writes `silver_*` Delta tables."),
+        ("code", COMMON_HELPERS),
+        ("code", SILVER_PLACEHOLDER),
+    ]
+
+
+GOLD_PLACEHOLDER = r'''# Gold outputs
+#
+# Reads silver tables, produces final result sets, and exports them as Excel
+# files to Files/Output/ for parity with Alteryx output paths.
+
+OUTPUT_DIR = "/lakehouse/default/Files/Output"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# Example
+silver = spark.table("silver_example").toPandas()
+silver.to_excel(f"{OUTPUT_DIR}/Example.xlsx", index=False)
+write_delta(silver, "gold_example", "gold")
+'''
+
+
+def gold_cells() -> list[tuple[str, str]]:
+    return [
+        ("markdown", "# Gold outputs\nWrites gold Delta tables and exports Excel files to `Files/Output/`."),
+        ("code", COMMON_HELPERS),
+        ("code", GOLD_PLACEHOLDER),
+    ]

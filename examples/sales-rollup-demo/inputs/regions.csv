@@ -1,0 +1,7 @@
+RegionCode,RegionName,Country
+R01,North,USA
+R02,South,USA
+R03,East,USA
+R04,West,USA
+R05,Central,Canada
+R06,Pacific,Canada
