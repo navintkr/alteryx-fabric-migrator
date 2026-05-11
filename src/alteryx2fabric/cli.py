@@ -344,5 +344,26 @@ def fix(nb_path, diff_path, provider, model):
     click.echo(f"Patched {nb_path} ({len(patched)} chars)")
 
 
+# ----------------------------- analyze -----------------------------
+@main.command()
+@click.argument("workflow_dir")
+@click.option("--out", "out_dir", default="analysis", help="Output folder for CSV/XLSX reports.")
+@click.option("--near-threshold", default=0.9, type=float,
+              help="Jaccard similarity threshold for near-duplicate clusters (0..1).")
+def analyze(workflow_dir: str, out_dir: str, near_threshold: float):
+    """Batch-analyze a folder of .yxmd files: report, dependencies, duplicates."""
+    from .analyze import analyze_dir
+    src = Path(workflow_dir)
+    if not src.exists():
+        click.secho(f"Folder not found: {workflow_dir}", fg="red"); sys.exit(2)
+    result = analyze_dir(src, Path(out_dir), near_threshold=near_threshold)
+    click.echo(f"Analyzed {result['file_count']} workflow file(s).")
+    click.echo(f"  Dependency edges:    {result['dependency_edges']}")
+    click.echo(f"  Duplicate clusters:  {result['duplicate_clusters']}")
+    click.echo("Outputs:")
+    for k, v in result["written"].items():
+        click.echo(f"  {k:<22} {v}")
+
+
 if __name__ == "__main__":
     main()

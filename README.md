@@ -64,6 +64,26 @@ a2f fix --notebook notebooks/nb_silver.py --diff diff.txt
 
 The system prompt embeds the skill's hard rules (Delta column mapping, year-9999, NULL arithmetic, etc.) so generated code follows them by default.
 
+## Portfolio analysis (batch)
+
+Have a folder of dozens or hundreds of `.yxmd` files and need to scope the migration? Use `a2f analyze`:
+
+```powershell
+a2f analyze C:\path\to\workflows --out .\analysis
+```
+
+Outputs in `./analysis/`:
+
+| File | Contents |
+|---|---|
+| `workflow_report.csv` | One row per workflow: tool count, plugin breakdown, inputs, outputs, complexity score, effort bucket (S/M/L/XL) |
+| `workflow_dependencies.csv` | Edges `upstream → downstream` whenever an output file of one workflow is consumed as an input by another |
+| `workflow_duplicates.csv` | Exact (identical structure hash) and near-duplicate (Jaccard ≥ threshold) clusters — candidates for consolidation |
+| `workflow_analysis.xlsx` | All three sheets in one Excel workbook |
+| `workflow_dependencies.mmd` | Mermaid diagram of the dependency graph |
+
+Tune near-duplicate sensitivity with `--near-threshold 0.85` (default 0.9).
+
 ## What the toolkit does NOT do
 
 - It does not **autonomously** translate every Alteryx formula. The semantic gap (Alteryx expression language, macros, spatial tools, R/Python tools) is what the **Skill** is for — point Copilot at your YXMD with this skill loaded.
