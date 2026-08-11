@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alteryx2fabric"
-version = "0.2.0"
+version = "0.2.1"
 description = "Toolkit for migrating Alteryx workflows to Microsoft Fabric (Lakehouse + Notebooks + Data Pipelines)."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -424,29 +424,64 @@ def package_notebooks_cmd(notebooks_dir: str, out_dir: str):
 @main.command("migrate")
 @click.argument("yxmd_path")
 @click.option("--inputs", "inputs_dir", default="inputs", help="Local input files.")
+@click.option("--workspace-id", default=None, help="Fabric workspace GUID. Bootstraps state without `a2f init`.")
+@click.option("--lakehouse-name", default=None, help="Lakehouse display name (default: <workflow>_LH).")
 @click.option("--provider", type=click.Choice(["github", "anthropic"]), default="github")
 @click.option("--model", default=None)
 @click.option("--to-fabric", is_flag=True, help="Provision, upload, and deploy after local generation.")
 @click.option("--run-pipeline", is_flag=True, help="Run the deployed pipeline.")
+@click.option("--ship", is_flag=True, help="One-shot deploy: implies --to-fabric --run-pipeline --yes.")
 @click.option("--reference", "reference_dir", default="reference_outputs", help="Alteryx reference outputs.")
 @click.option("--outputs", "outputs_dir", default="fabric_outputs", help="Downloaded Fabric outputs.")
 @click.option("--atol", default=1e-3, help="Numeric parity tolerance.")
 @click.option("--yes", is_flag=True, help="Approve Fabric writes and review-required mappings.")
 @click.option("--restart", is_flag=True, help="Rerun completed stages.")
-def migrate_cmd(yxmd_path: str, inputs_dir: str, provider: str, model: str | None,
-                to_fabric: bool, run_pipeline: bool, reference_dir: str, outputs_dir: str,
-                atol: float, yes: bool, restart: bool):
-    """Run or resume parse, plan, generation, preflight, and optional deployment."""
+def migrate_cmd(yxmd_path: str, inputs_dir: str, workspace_id: str | None, lakehouse_name: str | None,
+                provider: str, model: str | None, to_fabric: bool, run_pipeline: bool, ship: bool,
+                reference_dir: str, outputs_dir: str, atol: float, yes: bool, restart: bool):
+    """Run or resume parse, plan, generation, preflight, and optional deployment.
+
+    Pass --workspace-id and --ship to take a workflow from `.yxmd` to a deployed,
+    running, validated Fabric pipeline in a single command:
+
+        a2f migrate workflow.yxmd --workspace-id <guid> --inputs ./inputs --ship
+    """
     from .generate import generate_bronze, generate_gold, generate_silver
     from .migration import MigrationManifest
     from .notebooks import validate_notebook_body
     from .plan import build_plan, save_plan
     from .preflight import run_checks
 
+    if ship:
+        to_fabric = run_pipeline = yes = True
+
     root = Path(_project_root())
     source = Path(yxmd_path)
     if not source.is_file():
         raise click.ClickException(f"Workflow not found: {source}")
+
+    # Bootstrap project state and folders so a single command can reach deployment.
+    st = _state.load(root)
+    bootstrap: dict[str, str] = {}
+    if workspace_id:
+        bootstrap["workspace_id"] = workspace_id
+    if not st.get("project_name"):
+        bootstrap["project_name"] = source.stem
+    if lakehouse_name:
+        bootstrap["lakehouse_name"] = lakehouse_name
+    elif not st.get("lakehouse_name"):
+        bootstrap["lakehouse_name"] = f"{bootstrap.get('project_name', st.get('project_name', source.stem))}_LH"
+    if bootstrap:
+        st = _state.update(bootstrap, root)
+    for sub in ("inputs", "reference_outputs", "fabric_outputs", "notebooks", ".a2f"):
+        (root / sub).mkdir(parents=True, exist_ok=True)
+
+    if to_fabric and not (st.get("workspace_id") or os.environ.get("A2F_WORKSPACE_ID")):
+        raise click.ClickException(
+            "Deployment requires a Fabric workspace. Pass --workspace-id <guid> "
+            "(or run `a2f init`, or set A2F_WORKSPACE_ID)."
+        )
+
     manifest = MigrationManifest(root, source)
     if restart:
         manifest.reset()

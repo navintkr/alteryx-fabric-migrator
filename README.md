@@ -11,105 +11,67 @@ A toolkit for migrating Alteryx workflows (`.yxmd`) to Microsoft Fabric (Lakehou
 ## How it works
 
 ```mermaid
-flowchart LR
-    subgraph Sources["Migration inputs"]
-        YXMD["Alteryx workflow<br/>.yxmd"]
+flowchart TD
+    subgraph IN["Inputs"]
+        direction LR
+        YXMD["Alteryx .yxmd"]
         DATA["Source files<br/>CSV / Excel"]
-        REF["Alteryx reference outputs"]
+        REF["Alteryx reference<br/>outputs"]
     end
 
-    subgraph Local["Deterministic local workflow - a2f"]
-        INIT["a2f init<br/>Project folders and state"]
-        PARSE["a2f parse<br/>Decode XML and parameters"]
-        IR[("ir.json<br/>Tools, graph, files, parameters")]
-        PLAN["a2f plan<br/>Classify support and estimate risk"]
-        PLANFILES[("migration-plan.json / .md")]
-        GATE{"Manual or high-risk<br/>mapping detected?"}
-        APPROVE["Engineer review and approval"]
-        GENERATE["a2f generate all<br/>Draft Bronze, Silver, Gold bodies"]
-        BODIES[("nb_bronze.py<br/>nb_silver.py<br/>nb_gold.py")]
-        CHECK["Local validation<br/>Syntax, placeholders, inputs, references"]
-        PACKAGE["Package complete Fabric notebooks<br/>Helpers and Lakehouse metadata"]
-        MANIFEST[(".a2f/migration.json<br/>Stage status and source fingerprint")]
+    subgraph LOCAL["Local · deterministic a2f CLI"]
+        direction TB
+        PARSE["parse → ir.json"]
+        PLAN["plan → risk + confidence"]
+        GATE{"Manual or<br/>high-risk?"}
+        APPROVE["Engineer approval"]
+        GEN["generate<br/>Bronze · Silver · Gold"]
+        VALID["validate bodies<br/>syntax · placeholders"]
     end
 
-    subgraph Agent["Optional Copilot orchestration"]
-        COPILOT["Alteryx2Fabric agent"]
-        SKILL["YXMD decoding, formula mappings,<br/>architecture rules, known gotchas"]
-        FABRICSKILLS["Fabric skills<br/>Spark authoring and operations"]
-        COPILOT --> SKILL
-        COPILOT --> FABRICSKILLS
+    subgraph FAB["Microsoft Fabric · after approval"]
+        direction TB
+        PRE["preflight<br/>auth · workspace · lakehouse"]
+        DEPLOY["deploy notebooks<br/>+ Data Pipeline"]
+        RUN["run pipeline<br/>Bronze → Silver → Gold"]
+        OUT[("OneLake<br/>Files/Output")]
     end
 
-    subgraph Fabric["Approved Microsoft Fabric deployment"]
-        PREFLIGHT["Online preflight<br/>Azure auth, workspace, Lakehouse"]
-        LH[("Fabric Lakehouse")]
-        ONELAKE[("OneLake Files/Input")]
-        NB1["Bronze notebook<br/>Raw files to bronze Delta"]
-        NB2["Silver notebook<br/>Migrated business logic"]
-        NB3["Gold notebook<br/>Final Delta and file outputs"]
-        PIPE["Fabric Data Pipeline"]
-        OUTPUT[("OneLake Files/Output")]
-
-        PREFLIGHT --> LH
-        PREFLIGHT --> ONELAKE
-        LH --> NB1
-        ONELAKE --> NB1
-        NB1 -->|Succeeded| NB2
-        NB2 -->|Succeeded| NB3
-        PIPE -. orchestrates .-> NB1
-        PIPE -. orchestrates .-> NB2
-        PIPE -. orchestrates .-> NB3
-        NB3 --> OUTPUT
+    subgraph CHECK["Parity"]
+        direction TB
+        CMP{"Match Alteryx<br/>outputs?"}
+        DONE(["Migration complete"])
+        FIX["diagnose + fix"]
     end
 
-    subgraph Verification["Parity and repair loop"]
-        DOWNLOAD["Download Fabric outputs"]
-        COMPARE["a2f validate<br/>Schema, rows, values, tolerance"]
-        PARITY{"Exact parity?"}
-        DONE["Migration complete<br/>Auditable Fabric artifacts"]
-        DIAGNOSE["Spark operations diagnosis<br/>Logs, failed stage, root cause"]
-        FIX["Targeted notebook correction"]
+    COPILOT["Optional: Copilot agent<br/>skill + Fabric Spark skills"]
 
-        DOWNLOAD --> COMPARE
-        COMPARE --> PARITY
-        PARITY -->|Yes| DONE
-        PARITY -->|No| DIAGNOSE
-        DIAGNOSE --> FIX
-    end
+    YXMD --> PARSE --> PLAN --> GATE
+    GATE -->|no| GEN
+    GATE -->|yes| APPROVE --> GEN
+    DATA --> GEN --> VALID --> PRE
+    PRE --> DEPLOY --> RUN --> OUT --> CMP
+    REF --> CMP
+    CMP -->|yes| DONE
+    CMP -->|no| FIX -->|regenerate| GEN
 
-    YXMD --> INIT --> PARSE --> IR --> PLAN --> PLANFILES --> GATE
-    DATA --> GENERATE
-    GATE -->|No| GENERATE
-    GATE -->|Yes| APPROVE --> GENERATE
-    GENERATE --> BODIES --> CHECK --> PACKAGE --> PREFLIGHT
-    REF --> COMPARE
-    OUTPUT --> DOWNLOAD
-    FIX --> CHECK
-    COPILOT -. invokes and reviews .-> PLAN
-    COPILOT -. authors and reviews .-> GENERATE
-    FABRICSKILLS -. diagnoses failures .-> DIAGNOSE
-    PARSE -. records .-> MANIFEST
-    PLAN -. records .-> MANIFEST
-    GENERATE -. records .-> MANIFEST
-    PREFLIGHT -. records .-> MANIFEST
-    PIPE -. run status .-> MANIFEST
-    PARITY -. validation status .-> MANIFEST
-    MANIFEST -. resumes incomplete stage .-> PARSE
+    COPILOT -. assists .-> GEN
+    COPILOT -. diagnoses .-> FIX
+    VALID -. "resume state · .a2f/migration.json" .-> PARSE
 
-    classDef source fill:#f4f7fb,stroke:#52677d,color:#17212b;
-    classDef local fill:#e8f3ff,stroke:#1672b8,color:#102a43;
-    classDef fabric fill:#eaf7ee,stroke:#218739,color:#12351d;
-    classDef decision fill:#fff4d6,stroke:#b7791f,color:#4a2c0a;
-    classDef success fill:#ddf7ea,stroke:#16835b,color:#103b2c;
-    classDef repair fill:#ffe9e7,stroke:#c0443a,color:#4a1713;
+    classDef in fill:#eef2f7,stroke:#5b6b7f,color:#1b2733;
+    classDef local fill:#e6f2ff,stroke:#1f77c0,color:#0f2a43;
+    classDef fabric fill:#e7f6ec,stroke:#25873a,color:#123420;
+    classDef gate fill:#fff3d4,stroke:#b7791f,color:#4a2c0a;
+    classDef done fill:#d7f5e6,stroke:#12855a,color:#0e3a2b;
+    classDef repair fill:#ffe7e4,stroke:#c0443a,color:#48150f;
 
-    class YXMD,DATA,REF source;
-    class INIT,PARSE,IR,PLAN,PLANFILES,GENERATE,BODIES,CHECK,PACKAGE,MANIFEST,COPILOT,SKILL,FABRICSKILLS local;
-    class PREFLIGHT,LH,ONELAKE,NB1,NB2,NB3,PIPE,OUTPUT,DOWNLOAD,COMPARE fabric;
-    class GATE,PARITY decision;
-    class DONE success;
-    class APPROVE,DIAGNOSE,FIX repair;
+    class YXMD,DATA,REF in;
+    class PARSE,PLAN,GEN,VALID,APPROVE local;
+    class PRE,DEPLOY,RUN,OUT fabric;
+    class GATE,CMP gate;
+    class DONE done;
+    class FIX,COPILOT repair;
 ```
 
 The CLI owns deterministic and auditable operations. Copilot is optional: it reads the same plan and migration state, applies the repository skill when judgment is required, and delegates Fabric notebook authoring or failed-run diagnosis to the matching Fabric skills. Every guided migration is resumable because completed stages and the source workflow fingerprint are persisted in `.a2f/migration.json`.
@@ -134,7 +96,7 @@ pip install alteryx2fabric
 **From a GitHub Release wheel:**
 
 ```powershell
-pip install https://github.com/navintkr/alteryx-fabric-migrator/releases/download/v0.2.0/alteryx2fabric-0.2.0-py3-none-any.whl
+pip install https://github.com/navintkr/alteryx-fabric-migrator/releases/download/v0.2.1/alteryx2fabric-0.2.1-py3-none-any.whl
 ```
 
 **From source (editable, for development):**
@@ -152,6 +114,19 @@ a2f --help
 ```
 
 ## Quick start
+
+**One command, workflow to running Fabric pipeline:**
+
+```powershell
+az login --tenant <your-tenant-id>
+
+# Parse -> plan -> generate -> preflight -> provision -> upload -> deploy -> run -> validate.
+# --ship implies --to-fabric --run-pipeline --yes; --workspace-id bootstraps state (no `a2f init`).
+a2f migrate path/to/workflow.yxmd --workspace-id <fabric-ws-guid> --inputs ./inputs \
+    --reference ./reference_outputs --outputs ./fabric_outputs --ship
+```
+
+**Step-by-step (review before deploying):**
 
 ```powershell
 # 1. Install (see Install section above) and authenticate
@@ -209,7 +184,7 @@ a2f package-notebooks
 
 `a2f plan` classifies every tool as native, partial, manual, or unknown and emits confidence, risks, proposed artifacts, and a review recommendation. `a2f deploy` fails closed unless all three generated notebook bodies are present, syntactically valid, and free of scaffold placeholders.
 
-The guided `a2f migrate` command records each stage in `.a2f/migration.json`. Rerunning resumes completed work; use `--restart` to invalidate all stages. Fabric writes always require `--to-fabric --yes`. With `--run-pipeline`, it downloads `Files/Output` and validates parity automatically when reference outputs are available.
+The guided `a2f migrate` command records each stage in `.a2f/migration.json`. Rerunning resumes completed work; use `--restart` to invalidate all stages. `--workspace-id` bootstraps project state and folders so no separate `a2f init` is required, and `--ship` is a one-shot shorthand for `--to-fabric --run-pipeline --yes`. Fabric writes always require explicit approval (`--to-fabric --yes`, or `--ship`). With `--run-pipeline`, it downloads `Files/Output` and validates parity automatically when reference outputs are available.
 
 ## Copilot plugin
 
