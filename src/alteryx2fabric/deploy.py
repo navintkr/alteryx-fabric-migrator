@@ -1,10 +1,16 @@
 """Build and deploy Notebooks + Data Pipeline to a Fabric workspace."""
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 from .fabric_api import FabricClient, encode_json_part
-from .notebooks import build_ipynb, bronze_cells, silver_cells, gold_cells
+from .notebooks import bronze_cells, build_ipynb, generated_cells, gold_cells, silver_cells
+
+NOTEBOOK_FILES = {
+    "Bronze_Ingest": "nb_bronze.py",
+    "Silver_Transform": "nb_silver.py",
+    "Gold_Outputs": "nb_gold.py",
+}
 
 
 def deploy_notebook(
@@ -46,6 +52,38 @@ def deploy_default_notebooks(
     ids[f"{prefix}_Gold_Outputs"] = deploy_notebook(
         client, f"{prefix}_Gold_Outputs", gold_cells(), lakehouse_id, lakehouse_name
     )
+    return ids
+
+
+def deploy_generated_notebooks(
+    client: FabricClient,
+    notebooks_dir: str,
+    lakehouse_id: str,
+    lakehouse_name: str,
+    prefix: str = "Nb",
+) -> dict[str, str]:
+    """Deploy generated notebook bodies from a local directory."""
+    from pathlib import Path
+
+    root = Path(notebooks_dir)
+    missing = [filename for filename in NOTEBOOK_FILES.values() if not (root / filename).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"Missing generated notebook file(s) in {root}: {', '.join(missing)}. "
+            "Run `a2f generate all` first."
+        )
+
+    ids: dict[str, str] = {}
+    for suffix, filename in NOTEBOOK_FILES.items():
+        name = f"{prefix}_{suffix}"
+        body = (root / filename).read_text(encoding="utf-8")
+        if not body.strip():
+            raise ValueError(f"Generated notebook is empty: {root / filename}")
+        try:
+            cells = generated_cells(suffix.replace("_", " "), body)
+        except ValueError as exc:
+            raise ValueError(f"Invalid generated notebook {root / filename}: {exc}") from exc
+        ids[name] = deploy_notebook(client, name, cells, lakehouse_id, lakehouse_name)
     return ids
 
 
@@ -114,7 +152,7 @@ def deploy_pipeline(
     `chain` is a list of (activity_name, notebook_id) in execution order.
     `parameters` is an optional list of Parameter-shaped dicts; they become
     pipeline-level parameters that are passed through to each notebook
-    activity (so notebooks can reference them via `mssparkutils.runtime.context`
+    activity (so notebooks can reference them through Fabric notebook parameters
     or notebook `%%configure` parameter cells).
 
     Returns the pipeline item id.

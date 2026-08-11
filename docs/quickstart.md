@@ -36,20 +36,20 @@ my-migration/
 └── README.md
 ```
 
-Sanity-check that az auth works against Fabric:
+Run local checks first, then verify Azure and Fabric access:
 
 ```powershell
-a2f doctor
+a2f doctor --offline
+a2f doctor --json-output
 ```
 
-## 3. Parse the workflow
+## 3. Plan the workflow
 
 ```powershell
-a2f parse C:\path\to\workflow.yxmd --out ir.json
+a2f plan C:\path\to\workflow.yxmd
 ```
 
-Read `ir.json` to inventory the tools. The summary printed to stdout is a
-quick tool-count snapshot.
+Review `.a2f/migration-plan.md`, especially manual or unknown tool mappings.
 
 ## 4. Drop input files in
 
@@ -57,38 +57,44 @@ quick tool-count snapshot.
 copy C:\path\to\source-data\*.xlsx .\inputs\
 ```
 
-## 5. Provision the Lakehouse
+## 5. Generate local artifacts
 
 ```powershell
-a2f provision --lakehouse my_migration_lh
+a2f migrate C:\path\to\workflow.yxmd --inputs inputs
 ```
 
-## 6. Upload inputs to OneLake
+This parses, plans, generates, validates, and records resumable stage state in
+`.a2f/migration.json`. GitHub Models is the default provider; Copilot can invoke
+the workflow through the repository agent but is not a runtime dependency.
+
+## 6. Review and package
 
 ```powershell
-a2f upload inputs --to Input
+a2f doctor --offline
 ```
 
-## 7. Write the notebooks
+Inspect `notebooks/nb_bronze.py`, `nb_silver.py`, and `nb_gold.py`. Deployment
+rejects missing, invalid, empty, or placeholder bodies.
 
-Edit `notebooks/nb_bronze.py`, `notebooks/nb_silver.py`, `notebooks/nb_gold.py`
-with the Python translation of your YXMD. Use the agent prompt at
-[`../skill/prompts/migrate-workflow.prompt.md`](../skill/prompts/migrate-workflow.prompt.md)
-to have Copilot do most of this.
-
-## 8. Deploy
+## 7. Deploy and run
 
 ```powershell
-a2f deploy --pipeline-name my_migration_pipeline
+a2f migrate C:\path\to\workflow.yxmd --inputs inputs --to-fabric --yes --run-pipeline `
+	--reference reference_outputs --outputs fabric_outputs
 ```
 
-## 9. Run
+Fabric writes require explicit `--yes`. Rerun the same command to resume after
+a failure, or add `--restart` to regenerate all stages.
+
+## 8. Optional standalone packaging
 
 ```powershell
-a2f run
+a2f package-notebooks
 ```
 
-## 10. Validate
+This emits complete `.ipynb` files with helper cells and Lakehouse metadata.
+
+## 9. Validate
 
 ```powershell
 a2f download Files/Output --out fabric_outputs

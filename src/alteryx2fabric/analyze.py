@@ -9,12 +9,14 @@ Given a folder of `.yxmd` files, produce:
 from __future__ import annotations
 
 import hashlib
+import json
+import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .parse import parse_yxmd
-
+from .plan import classify_tool
 
 # ----------------------------- per-workflow report -----------------------------
 
@@ -38,6 +40,14 @@ class WorkflowReport:
     outputs: str
     complexity_score: int
     effort: str
+    estimated_days: float
+    confidence: float
+    native_tools: int
+    partial_tools: int
+    manual_tools: int
+    unknown_tools: int
+    risk_count: int
+    migration_priority: str
     structure_hash: str
     error: str = ""
 
@@ -77,14 +87,16 @@ def _structure_hash(ir: dict) -> str:
 def analyze_one(path: Path) -> WorkflowReport:
     try:
         ir = parse_yxmd(path)
-    except Exception as e:
+    except (OSError, ValueError, ET.ParseError) as e:
         return WorkflowReport(
             name=path.name, path=str(path), size_bytes=path.stat().st_size,
             tool_count=0, connection_count=0, input_count=0, output_count=0,
             macro_count=0, formula_count=0, join_count=0, container_count=0,
             parameter_count=0, parameters="",
             top_plugins="", inputs="", outputs="", complexity_score=0,
-            effort="S", structure_hash="", error=str(e)[:200],
+            effort="S", estimated_days=0.0, confidence=0.0,
+            native_tools=0, partial_tools=0, manual_tools=0, unknown_tools=0,
+            risk_count=1, migration_priority="blocked", structure_hash="", error=str(e)[:200],
         )
     tools = ir.get("tools", [])
     conns = ir.get("connections", [])
@@ -108,6 +120,24 @@ def analyze_one(path: Path) -> WorkflowReport:
         + macro_count * 5
         + len(params)
     )
+    support = Counter()
+    confidences = []
+    for tool in tools:
+        level, confidence, _ = classify_tool(tool.get("plugin", ""))
+        support[level] += 1
+        confidences.append(confidence)
+    risk_count = support["partial"] + support["manual"] + support["unknown"]
+    confidence = round(sum(confidences) / len(confidences), 2) if confidences else 0.0
+    effort = _effort_bucket(score)
+    estimated_days = {"S": 0.5, "M": 2.0, "L": 5.0, "XL": 10.0}[effort]
+    if support["manual"]:
+        priority = "review"
+    elif confidence >= 0.85 and effort in {"S", "M"}:
+        priority = "wave_1"
+    elif confidence >= 0.65:
+        priority = "wave_2"
+    else:
+        priority = "wave_3"
 
     return WorkflowReport(
         name=path.name,
@@ -127,7 +157,15 @@ def analyze_one(path: Path) -> WorkflowReport:
         inputs=";".join(i["file"] for i in ir.get("inputs", [])),
         outputs=";".join(o["file"] for o in ir.get("outputs", [])),
         complexity_score=score,
-        effort=_effort_bucket(score),
+        effort=effort,
+        estimated_days=estimated_days,
+        confidence=confidence,
+        native_tools=support["native"],
+        partial_tools=support["partial"],
+        manual_tools=support["manual"],
+        unknown_tools=support["unknown"],
+        risk_count=risk_count,
+        migration_priority=priority,
         structure_hash=_structure_hash(ir),
     )
 
@@ -153,8 +191,8 @@ def _collect_irs(workflow_dir: Path) -> dict[str, dict]:
     for p in sorted(workflow_dir.rglob("*.yxmd")):
         try:
             out[str(p)] = parse_yxmd(p)
-        except Exception:
-            pass
+        except (OSError, ValueError, ET.ParseError):
+            continue
     return out
 
 
@@ -205,7 +243,7 @@ def detect_duplicates(
         hash_to_members[_structure_hash(ir)].append(wf)
     clusters: list[DuplicateCluster] = []
     exact_members_flat: set[str] = set()
-    for h, members in hash_to_members.items():
+    for members in hash_to_members.values():
         if len(members) > 1:
             clusters.append(DuplicateCluster(kind="exact", similarity=1.0, members=sorted(members)))
             exact_members_flat.update(members)
@@ -290,13 +328,33 @@ def write_reports(
             from .parameters import detect_parameters, params_to_rows
             ps = detect_parameters(r.path)
             param_rows.extend(params_to_rows(ps, r.name))
-        except Exception:
-            pass
+        except (OSError, ValueError, ET.ParseError):
+            continue
 
     p1 = out_dir / "workflow_report.csv"; _write_csv(report_rows, p1); written["report_csv"] = p1
     p2 = out_dir / "workflow_dependencies.csv"; _write_csv(edge_rows, p2); written["dependencies_csv"] = p2
     p3 = out_dir / "workflow_duplicates.csv"; _write_csv(cluster_rows, p3); written["duplicates_csv"] = p3
     p_params = out_dir / "workflow_parameters.csv"; _write_csv(param_rows, p_params); written["parameters_csv"] = p_params
+
+    valid_reports = [report for report in reports if not report.error]
+    summary = {
+        "schema_version": 1,
+        "workflow_count": len(reports),
+        "total_tools": sum(report.tool_count for report in valid_reports),
+        "estimated_engineering_days": round(sum(report.estimated_days for report in valid_reports), 1),
+        "average_confidence": round(
+            sum(report.confidence for report in valid_reports) / len(valid_reports), 2
+        ) if valid_reports else 0.0,
+        "workflows_with_risk": sum(1 for report in valid_reports if report.risk_count),
+        "effort_distribution": dict(Counter(report.effort for report in valid_reports)),
+        "priority_distribution": dict(Counter(report.migration_priority for report in valid_reports)),
+        "duplicate_workflows": sum(len(cluster.members) for cluster in clusters),
+        "dependency_edges": len(edges),
+        "capacity_assessment_required": any(report.effort in {"L", "XL"} for report in valid_reports),
+    }
+    p_summary = out_dir / "portfolio_summary.json"
+    p_summary.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    written["portfolio_summary"] = p_summary
 
     if write_xlsx:
         try:
@@ -308,8 +366,8 @@ def write_reports(
                 pd.DataFrame(cluster_rows).to_excel(xw, sheet_name="Duplicates", index=False)
                 pd.DataFrame(param_rows).to_excel(xw, sheet_name="Parameters", index=False)
             written["xlsx"] = xlsx_path
-        except Exception:
-            pass
+        except (ImportError, OSError, ValueError):
+            written.pop("xlsx", None)
 
     # Mermaid graph for dependencies
     if edges:

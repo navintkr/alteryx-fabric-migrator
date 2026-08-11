@@ -7,9 +7,8 @@
 │                  alteryx2fabric repo                              │
 │                                                                   │
 │  ┌──────────────────────┐         ┌──────────────────────────┐    │
-│  │  CLI (a2f)           │         │  Skill (skill/)          │    │
-│  │  src/alteryx2fabric  │ ◄──────►│  SKILL.md + prompts +    │    │
-│  │  pip-installable     │         │  instructions/*.md       │    │
+│  │  CLI (a2f)           │         │ Copilot plugin (.github) │    │
+│  │  deterministic core  │ ◄──────►│ agent + skill + prompt   │    │
 │  └────────┬─────────────┘         └──────────────────────────┘    │
 │           │                                                       │
 │           ▼                                                       │
@@ -38,16 +37,19 @@
 | `fabric_api.py`  | `FabricClient` — items, LRO polling, notebook/pipeline update |
 | `onelake.py`     | DFS upload/download with chunked PUT+PATCH semantics |
 | `parse.py`       | `.yxmd` XML → IR (`workflow`, `tools`, `connections`, `inputs`, `outputs`) |
+| `plan.py`        | deterministic support classification, confidence, risks, and artifact plan |
+| `migration.py`   | resumable stage manifest keyed by source fingerprint |
+| `preflight.py`   | structured local/Azure/Fabric checks with JSON output |
 | `state.py`       | per-project `.a2f/state.json` keyed by workspace_id + project name |
 | `notebooks.py`   | Build Synapse-PySpark .ipynb with trident metadata + helper cells |
 | `deploy.py`      | Idempotent create-or-update of notebooks + pipeline |
 | `run.py`         | Trigger pipeline, poll job, surface progress |
 | `validate.py`    | Diff reference vs. generated output folders |
-| `cli.py`         | Click commands: init / doctor / parse / provision / upload / deploy / run / download / validate |
+| `cli.py`         | Click commands including plan / migrate / generate / package / deploy / run / validate |
 
 ## Default deployment shape
 
-`a2f deploy` creates a linear pipeline of three notebooks:
+`a2f deploy` validates and packages the three generated bodies, then creates a linear pipeline:
 
 ```
 NbBronze ──Succeeded──► NbSilver ──Succeeded──► NbGold
@@ -58,26 +60,23 @@ metadata so file paths are relative (`Files/...`, `Tables/...`).
 
 ## State file
 
-`.a2f/state.json`:
+.a2f/state.json stores Fabric identities for the current project:
 
 ```json
 {
-  "projects": {
-    "<cwd-absolute-path>": {
-      "name": "my-migration",
-      "workspace_id": "...",
-      "lakehouse_id": "...",
-      "lakehouse_name": "my_migration_lh",
-      "notebooks": {"NbBronze": "...", "NbSilver": "...", "NbGold": "..."},
-      "pipeline_id": "...",
-      "pipeline_name": "my_migration_pipeline"
-    }
-  }
+  "project_name": "my-migration",
+  "workspace_id": "...",
+  "lakehouse_id": "...",
+  "lakehouse_name": "my_migration_lh",
+  "notebooks": {"Nb_Bronze_Ingest": "..."},
+  "pipeline_id": "...",
+  "pipeline_name": "PL_my-migration_Run"
 }
 ```
 
-The CLI reads/writes only the entry matching the current working directory,
-so multiple migrations can coexist on one workstation.
+`.a2f/migration.json` separately records parse, plan, generation, preflight,
+deployment, run, and validation stage outcomes. Its source hash invalidates stale
+completion when the YXMD changes.
 
 ## Why not...?
 

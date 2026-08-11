@@ -89,7 +89,7 @@ def diff_folders(ref_dir: str | Path, gen_dir: str | Path, *, atol: float = 1e-3
         try:
             ref_df = _read(ref_path)
             gen_df = _read(gen_path)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - report per-file reader failures without aborting the batch
             fd.note = f"read error: {e}"
             results.append(fd)
             continue

@@ -4,11 +4,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from alteryx2fabric.analyze import (
-    analyze_one,
+    _collect_irs,
     analyze_dir,
+    analyze_one,
     detect_dependencies,
     detect_duplicates,
-    _collect_irs,
 )
 
 # Two workflows. A writes shared.csv. B reads shared.csv. C is structurally
@@ -66,6 +66,9 @@ def test_analyze_one_basic(tmp_path: Path):
     assert r.output_count == 1
     assert "Formula:1" in r.top_plugins
     assert r.effort in {"S", "M", "L", "XL"}
+    assert 0 <= r.confidence <= 1
+    assert r.native_tools >= 1
+    assert r.migration_priority in {"wave_1", "wave_2", "wave_3", "review"}
     assert r.structure_hash
 
 
@@ -100,3 +103,6 @@ def test_analyze_dir_writes_outputs(tmp_path: Path):
     assert (out / "workflow_report.csv").exists()
     assert (out / "workflow_dependencies.csv").exists()
     assert (out / "workflow_duplicates.csv").exists()
+    summary = __import__("json").loads((out / "portfolio_summary.json").read_text(encoding="utf-8"))
+    assert summary["workflow_count"] == 2
+    assert summary["estimated_engineering_days"] > 0

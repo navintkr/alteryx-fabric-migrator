@@ -75,6 +75,11 @@ class FabricClient:
         r = self._post(url, json_body={"definition": definition})
         if r.status_code not in (200, 202):
             raise RuntimeError(f"updateDefinition failed {r.status_code}: {r.text}")
+        if r.status_code == 202:
+            location = r.headers.get("Location")
+            if not location:
+                raise RuntimeError(f"updateDefinition returned 202 without Location: {r.text}")
+            self._wait_lro(location)
 
     # ---------- lakehouse ----------
     def create_lakehouse(self, name: str) -> dict:

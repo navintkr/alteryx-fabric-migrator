@@ -29,7 +29,7 @@ Use these helpers (assume they are defined in an earlier cell):
 - write_delta(pdf, table_name, stage_subdir): handles the parquet-stage Delta write with column mapping.
 - _fmt_dt(v): formats a datetime/Timestamp to ISO string, handles year-9999 and NaT.
 
-Available variables in scope: spark, mssparkutils.
+Available variables in scope: spark, notebookutils.
 """
 
 
@@ -43,8 +43,8 @@ def _read_file_headers(path: Path, max_rows: int = 5) -> list[str]:
         if suf in (".xlsx", ".xls"):
             import pandas as pd
             return list(pd.read_excel(path, nrows=max_rows).columns)
-    except Exception:
-        pass
+    except (ImportError, OSError, ValueError):
+        return []
     return []
 
 

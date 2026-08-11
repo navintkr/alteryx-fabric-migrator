@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import urllib.parse
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import requests
 from .auth import storage_headers
 
 DFS_HOST = "https://onelake.dfs.fabric.microsoft.com"
+GUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 def _encode_path(parts: list[str]) -> str:
@@ -26,7 +28,7 @@ class OneLake:
         self.lakehouse = lakehouse_name_or_id
 
     def _base(self, *segs: str) -> str:
-        if "." not in self.lakehouse:
+        if "." not in self.lakehouse and not GUID_RE.fullmatch(self.lakehouse):
             lh_seg = self.lakehouse + ".Lakehouse"
         else:
             lh_seg = self.lakehouse
@@ -72,8 +74,12 @@ class OneLake:
 
     def list_dir(self, remote_subpath: str = "") -> list[dict]:
         """List paths under Files/<remote_subpath> recursively."""
-        directory = "Files" + (f"/{remote_subpath}" if remote_subpath else "")
-        url = self._base() + f"?recursive=true&resource=filesystem&directory={urllib.parse.quote(directory)}"
+        lakehouse = self.lakehouse
+        if "." not in lakehouse and not GUID_RE.fullmatch(lakehouse):
+            lakehouse += ".Lakehouse"
+        directory = f"{lakehouse}/Files" + (f"/{remote_subpath}" if remote_subpath else "")
+        workspace_url = f"{DFS_HOST}/{urllib.parse.quote(self.workspace, safe='')}"
+        url = workspace_url + f"?recursive=true&resource=filesystem&directory={urllib.parse.quote(directory, safe='/')}"
         r = requests.get(url, headers=storage_headers())
         if not r.ok:
             raise RuntimeError(f"OneLake list failed: {r.status_code} {r.text}")

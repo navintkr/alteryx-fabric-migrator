@@ -15,7 +15,6 @@ from dataclasses import dataclass
 
 import requests
 
-
 GITHUB_BASE = "https://models.github.ai/inference"
 ANTHROPIC_BASE = "https://api.anthropic.com/v1"
 
@@ -47,8 +46,8 @@ class LLMClient:
             ).strip()
             if tok:
                 return tok
-        except Exception:
-            pass
+        except (OSError, subprocess.SubprocessError):
+            tok = ""
         raise RuntimeError(
             "No GitHub token found. Set GITHUB_TOKEN or run `gh auth login`."
         )

@@ -1,7 +1,6 @@
 """Smoke test for alteryx2fabric.parse."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from alteryx2fabric.parse import parse_yxmd, summarise

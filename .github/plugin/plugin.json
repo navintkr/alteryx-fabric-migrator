@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "name": "alteryx2fabric",
+  "description": "Plan, author, validate, and deploy Alteryx workflow migrations to Microsoft Fabric",
+  "version": "0.2.0",
+  "license": "MIT",
+  "repository": "https://github.com/navintkr/alteryx-fabric-migrator",
+  "keywords": [
+    "alteryx",
+    "microsoft-fabric",
+    "lakehouse",
+    "notebooks",
+    "migration"
+  ],
+  "skills": [
+    "./.github/skills/alteryx2fabric"
+  ],
+  "agents": [
+    "./.github/agents/Alteryx2Fabric.agent.md"
+  ]
+}

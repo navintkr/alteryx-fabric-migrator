@@ -111,11 +111,12 @@ def parse_yxmd(path: str | Path) -> dict:
 
 def _params_for_ir(path: str | Path) -> list[dict]:
     """Inline import to avoid a circular dependency with parameters.py."""
-    from .parameters import detect_parameters
     from dataclasses import asdict
+
+    from .parameters import detect_parameters
     try:
         return [asdict(p) for p in detect_parameters(path)]
-    except Exception:
+    except (OSError, ValueError, ET.ParseError):
         return []
 
 

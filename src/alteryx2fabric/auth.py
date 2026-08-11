@@ -22,15 +22,21 @@ _CACHE: dict[str, tuple[str, float]] = {}
 _TTL_SECONDS = 50 * 60  # tokens are typically valid 60+ min
 
 
-def _check_az() -> None:
-    if shutil.which("az") is None:
+def _az_executable() -> str:
+    executable = shutil.which("az")
+    if executable is None:
         raise RuntimeError("Azure CLI (`az`) is required. Install it and run `az login` first.")
+    return executable
+
+
+def _check_az() -> None:
+    _az_executable()
 
 
 def _fetch_token(resource: str) -> str:
     _check_az()
     out = subprocess.check_output(
-        ["az", "account", "get-access-token", "--resource", resource, "--query", "accessToken", "-o", "tsv"],
+        [_az_executable(), "account", "get-access-token", "--resource", resource, "--query", "accessToken", "-o", "tsv"],
         shell=False,
     )
     return out.decode().strip()
@@ -52,7 +58,7 @@ def get_tenant_and_user() -> tuple[str, str]:
     """Return (tenantId, userPrincipalName) of the currently signed-in `az` account."""
     _check_az()
     out = subprocess.check_output(
-        ["az", "account", "show", "--query", "{t:tenantId,u:user.name}", "-o", "json"],
+        [_az_executable(), "account", "show", "--query", "{t:tenantId,u:user.name}", "-o", "json"],
         shell=False,
     )
     import json

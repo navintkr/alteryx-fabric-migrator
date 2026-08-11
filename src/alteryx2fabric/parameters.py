@@ -16,9 +16,8 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
-
 
 # Tokens like %Question.StartDate% or %Engine.WorkflowDirectory%
 _TOKEN_RE = re.compile(r"%(Question|Engine|User)\.([A-Za-z0-9_]+)%")
@@ -67,7 +66,7 @@ class Parameter:
         default: object = self.default
         if pi_type == "int":
             try: default = int(self.default) if self.default else 0
-            except Exception: default = 0
+            except (TypeError, ValueError): default = 0
         elif pi_type == "bool":
             default = str(self.default).strip().lower() in {"1", "true", "yes"}
         elif pi_type == "array":

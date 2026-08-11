@@ -8,11 +8,12 @@ from pathlib import Path
 
 import click
 
-from . import __version__, state as _state
+from . import __version__
+from . import state as _state
+from .deploy import deploy_generated_notebooks, deploy_pipeline
 from .fabric_api import FabricClient
 from .onelake import OneLake
 from .parse import parse_yxmd, save_ir, summarise
-from .deploy import deploy_default_notebooks, deploy_pipeline
 from .run import run_pipeline_and_wait
 from .validate import diff_folders, format_report
 
@@ -77,25 +78,20 @@ def init(name: str, workspace_id: str, lakehouse_name: str | None):
 
 # ----------------------------- doctor -----------------------------
 @main.command()
-def doctor():
-    """Preflight: check az login, workspace access."""
-    from .auth import get_tenant_and_user
-    try:
-        tenant, user = get_tenant_and_user()
-        click.echo(f"az tenant: {tenant}")
-        click.echo(f"az user:   {user}")
-    except Exception as e:
-        click.secho(f"az check failed: {e}", fg="red")
+@click.option("--json-output", "as_json", is_flag=True, help="Emit structured JSON for automation.")
+@click.option("--offline", is_flag=True, help="Run local checks without contacting Azure or Fabric.")
+def doctor(as_json: bool, offline: bool):
+    """Check local artifacts, Azure authentication, and Fabric access."""
+    from .preflight import exit_code, run_checks
+    checks = run_checks(_project_root(), online=not offline)
+    if as_json:
+        click.echo(json.dumps({"checks": [check.as_dict() for check in checks]}, indent=2))
+    else:
+        colors = {"pass": "green", "warn": "yellow", "fail": "red"}
+        for check in checks:
+            click.secho(f"[{check.status.upper():4}] {check.name}: {check.message}", fg=colors[check.status])
+    if exit_code(checks):
         sys.exit(2)
-
-    st = _state.load(_project_root())
-    ws = st.get("workspace_id")
-    if not ws:
-        click.secho("workspace_id not set in .a2f/state.json", fg="yellow")
-        return
-    client = FabricClient(ws)
-    items = client.list_items()
-    click.echo(f"workspace {ws}: {len(items)} items")
 
 
 # ----------------------------- parse -----------------------------
@@ -108,6 +104,24 @@ def parse(yxmd_path: str, out_path: str):
     save_ir(ir, out_path)
     click.echo(summarise(ir))
     click.secho(f"\nIR written: {out_path}", fg="green")
+
+
+@main.command("plan")
+@click.argument("source", required=False)
+@click.option("--ir", "ir_path", default="ir.json", help="Existing IR JSON path.")
+@click.option("--out", "out_path", default=".a2f/migration-plan.json", help="Plan JSON path.")
+@click.option("--markdown", "markdown_path", default=".a2f/migration-plan.md", help="Plan Markdown path.")
+def plan_cmd(source: str | None, ir_path: str, out_path: str, markdown_path: str):
+    """Create a deterministic migration plan from a YXMD or existing IR."""
+    from .plan import build_plan, format_plan, save_plan
+    if source:
+        ir = parse_yxmd(source)
+    else:
+        ir = _load_ir(ir_path)
+    migration_plan = build_plan(ir, source)
+    save_plan(migration_plan, out_path, markdown_path)
+    click.echo(format_plan(migration_plan))
+    click.secho(f"Plan written: {out_path} and {markdown_path}", fg="green")
 
 
 # ----------------------------- provision -----------------------------
@@ -133,11 +147,11 @@ def upload(local_dir: str, remote_prefix: str):
     """Upload all files under LOCAL_DIR to OneLake Files/<TO>/."""
     st = _state.load(_project_root())
     ws = st.get("workspace_id")
-    lh_name = st.get("lakehouse_name")
-    if not (ws and lh_name):
+    lakehouse = st.get("lakehouse_id") or st.get("lakehouse_name")
+    if not (ws and lakehouse):
         click.secho("workspace_id / lakehouse_name missing — run init + provision first.", fg="red")
         sys.exit(2)
-    ol = OneLake(ws, lh_name)
+    ol = OneLake(ws, lakehouse)
     src = Path(local_dir)
     n = 0
     for p in sorted(src.iterdir()):
@@ -150,12 +164,12 @@ def upload(local_dir: str, remote_prefix: str):
 
 # ----------------------------- deploy -----------------------------
 @main.command()
-@click.option("--inputs-config", default=None, help="JSON file describing bronze inputs.")
+@click.option("--notebooks-dir", default="notebooks", help="Directory containing generated notebook bodies.")
 @click.option("--prefix", default="Nb", help="Notebook name prefix.")
 @click.option("--pipeline-name", default=None, help="Data Pipeline name (default: PL_<project>_Run).")
 @click.option("--ir", "ir_path", default="ir.json", help="IR JSON path (for pipeline parameters).")
 @click.option("--no-parameters", is_flag=True, help="Skip parameterizing the pipeline from the IR.")
-def deploy(inputs_config: str | None, prefix: str, pipeline_name: str | None,
+def deploy(notebooks_dir: str, prefix: str, pipeline_name: str | None,
            ir_path: str, no_parameters: bool):
     """Deploy Bronze/Silver/Gold notebooks and the orchestration pipeline."""
     client = _get_client_or_exit()
@@ -164,12 +178,6 @@ def deploy(inputs_config: str | None, prefix: str, pipeline_name: str | None,
     lh_name = st.get("lakehouse_name")
     if not lh_id:
         click.secho("Lakehouse not provisioned. Run `a2f provision` first.", fg="red"); sys.exit(2)
-
-    if inputs_config and Path(inputs_config).exists():
-        inputs = json.loads(Path(inputs_config).read_text(encoding="utf-8"))
-    else:
-        inputs = [{"table": "example", "file": "example.csv"}]
-        click.secho("No --inputs-config provided; deploying with a placeholder bronze cell.", fg="yellow")
 
     # Pull pipeline parameters from the IR (if present)
     parameters: list[dict] = []
@@ -181,10 +189,16 @@ def deploy(inputs_config: str | None, prefix: str, pipeline_name: str | None,
                 click.echo(f"Detected {len(parameters)} parameter(s) from {ir_path}:")
                 for p in parameters:
                     click.echo(f"  - {p['name']} ({p['source']}:{p['type']}) default={p.get('default','')!r}")
-        except Exception as e:
+        except (OSError, json.JSONDecodeError, KeyError, TypeError) as e:
             click.secho(f"Could not load parameters from {ir_path}: {e}", fg="yellow")
 
-    nb_ids = deploy_default_notebooks(client, inputs, lh_id, lh_name, prefix=prefix)
+    try:
+        nb_ids = deploy_generated_notebooks(
+            client, notebooks_dir, lh_id, lh_name, prefix=prefix
+        )
+    except (FileNotFoundError, ValueError) as e:
+        click.secho(str(e), fg="red")
+        sys.exit(2)
     for name, _id in nb_ids.items():
         click.echo(f"  notebook {name}: {_id}")
 
@@ -243,7 +257,7 @@ def run(pipeline_name: str | None, timeout: int, params: tuple[str, ...]):
         click.echo(f"Runtime parameters: {runtime_params}")
 
     click.echo(f"Triggering pipeline {pid} ...")
-    status_url, progress, final = run_pipeline_and_wait(
+    _status_url, progress, final = run_pipeline_and_wait(
         client, pid, timeout_s=timeout, parameters=runtime_params or None
     )
     for elapsed, status in progress:
@@ -262,12 +276,13 @@ def download(remote_path: str, out_dir: str):
     """Download a file or all files in a remote folder from OneLake Files/."""
     st = _state.load(_project_root())
     ws = st.get("workspace_id")
-    lh_name = st.get("lakehouse_name")
-    ol = OneLake(ws, lh_name)
+    lakehouse = st.get("lakehouse_id") or st.get("lakehouse_name")
+    ol = OneLake(ws, lakehouse)
     dest = Path(out_dir); dest.mkdir(parents=True, exist_ok=True)
+    relative_path = remote_path.split("Files/", 1)[-1]
     # Try as folder first
     try:
-        paths = ol.list_dir(remote_path)
+        paths = ol.list_dir(relative_path)
         files = [p for p in paths if not p.get("isDirectory")]
         if files:
             for p in files:
@@ -277,11 +292,11 @@ def download(remote_path: str, out_dir: str):
                 ol.download(full_remote, dest / name)
                 click.echo(f"  downloaded {name} ({p.get('contentLength')} bytes)")
             return
-    except Exception:
-        pass
+    except RuntimeError:
+        paths = []
     # Fall back to single file
-    name = remote_path.rsplit("/", 1)[-1]
-    ol.download(remote_path, dest / name)
+    name = relative_path.rsplit("/", 1)[-1]
+    ol.download(relative_path, dest / name)
     click.echo(f"  downloaded {name}")
 
 
@@ -360,6 +375,172 @@ def generate_gold_cmd(ctx, out_path):
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     Path(out_path).write_text(code, encoding="utf-8")
     click.echo(f"Wrote {out_path} ({len(code)} chars)")
+
+
+@generate.command("all")
+@click.option("--inputs", "inputs_dir", default="inputs", help="Local inputs directory.")
+@click.option("--out-dir", default="notebooks", help="Notebook body output directory.")
+@click.pass_context
+def generate_all_cmd(ctx, inputs_dir, out_dir):
+    """Generate Bronze, Silver, and Gold notebook bodies."""
+    from .generate import generate_bronze, generate_gold, generate_silver
+    target = Path(out_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    bodies = {
+        "nb_bronze.py": generate_bronze(ctx.obj["ir"], Path(inputs_dir), ctx.obj["llm"]),
+        "nb_silver.py": generate_silver(ctx.obj["ir"], ctx.obj["llm"]),
+        "nb_gold.py": generate_gold(ctx.obj["ir"], ctx.obj["llm"]),
+    }
+    from .notebooks import validate_notebook_body
+    for filename, code in bodies.items():
+        issues = validate_notebook_body(code)
+        if issues:
+            raise click.ClickException(f"{filename}: {'; '.join(issues)}")
+        (target / filename).write_text(code, encoding="utf-8")
+        click.echo(f"Wrote {target / filename} ({len(code)} chars)")
+
+
+@main.command("package-notebooks")
+@click.option("--notebooks-dir", default="notebooks", help="Directory containing generated .py bodies.")
+@click.option("--out-dir", default="notebooks/packaged", help="Destination for complete .ipynb files.")
+def package_notebooks_cmd(notebooks_dir: str, out_dir: str):
+    """Validate and package generated bodies as complete Fabric notebooks."""
+    from .deploy import NOTEBOOK_FILES
+    from .notebooks import package_notebook
+    st = _state.load(_project_root())
+    required = ("workspace_id", "lakehouse_id", "lakehouse_name")
+    missing = [key for key in required if not st.get(key)]
+    if missing:
+        raise click.ClickException(f"Missing state values: {', '.join(missing)}. Run `a2f provision` first.")
+    for suffix, filename in NOTEBOOK_FILES.items():
+        target = Path(out_dir) / filename.replace(".py", ".ipynb")
+        package_notebook(
+            Path(notebooks_dir) / filename, target, suffix.replace("_", " "),
+            st["workspace_id"], st["lakehouse_id"], st["lakehouse_name"],
+        )
+        click.echo(f"Wrote {target}")
+
+
+@main.command("migrate")
+@click.argument("yxmd_path")
+@click.option("--inputs", "inputs_dir", default="inputs", help="Local input files.")
+@click.option("--provider", type=click.Choice(["github", "anthropic"]), default="github")
+@click.option("--model", default=None)
+@click.option("--to-fabric", is_flag=True, help="Provision, upload, and deploy after local generation.")
+@click.option("--run-pipeline", is_flag=True, help="Run the deployed pipeline.")
+@click.option("--reference", "reference_dir", default="reference_outputs", help="Alteryx reference outputs.")
+@click.option("--outputs", "outputs_dir", default="fabric_outputs", help="Downloaded Fabric outputs.")
+@click.option("--atol", default=1e-3, help="Numeric parity tolerance.")
+@click.option("--yes", is_flag=True, help="Approve Fabric writes and review-required mappings.")
+@click.option("--restart", is_flag=True, help="Rerun completed stages.")
+def migrate_cmd(yxmd_path: str, inputs_dir: str, provider: str, model: str | None,
+                to_fabric: bool, run_pipeline: bool, reference_dir: str, outputs_dir: str,
+                atol: float, yes: bool, restart: bool):
+    """Run or resume parse, plan, generation, preflight, and optional deployment."""
+    from .generate import generate_bronze, generate_gold, generate_silver
+    from .migration import MigrationManifest
+    from .notebooks import validate_notebook_body
+    from .plan import build_plan, save_plan
+    from .preflight import run_checks
+
+    root = Path(_project_root())
+    source = Path(yxmd_path)
+    if not source.is_file():
+        raise click.ClickException(f"Workflow not found: {source}")
+    manifest = MigrationManifest(root, source)
+    if restart:
+        manifest.reset()
+
+    try:
+        if manifest.should_run("parse"):
+            ir = parse_yxmd(source)
+            save_ir(ir, root / "ir.json")
+            manifest.completed("parse", f"Parsed {len(ir.get('tools', []))} tools")
+        else:
+            ir = _load_ir(str(root / "ir.json"))
+            click.echo("[resume] parse already completed")
+
+        if manifest.should_run("plan"):
+            migration_plan = build_plan(ir, str(source.resolve()))
+            save_plan(migration_plan, root / ".a2f/migration-plan.json", root / ".a2f/migration-plan.md")
+            manifest.completed("plan", migration_plan["summary"]["recommendation"], migration_plan["summary"])
+        else:
+            migration_plan = json.loads((root / ".a2f/migration-plan.json").read_text(encoding="utf-8"))
+            click.echo("[resume] plan already completed")
+
+        recommendation = migration_plan["summary"]["recommendation"]
+        if recommendation == "review_required" and not yes:
+            raise click.ClickException(
+                "The plan contains manual/high-risk mappings. Review .a2f/migration-plan.md and rerun with --yes."
+            )
+
+        if manifest.should_run("generate"):
+            llm = _llm(provider, model)
+            target = root / "notebooks"
+            target.mkdir(exist_ok=True)
+            bodies = {
+                "nb_bronze.py": generate_bronze(ir, Path(inputs_dir), llm),
+                "nb_silver.py": generate_silver(ir, llm),
+                "nb_gold.py": generate_gold(ir, llm),
+            }
+            for filename, body in bodies.items():
+                issues = validate_notebook_body(body)
+                if issues:
+                    raise ValueError(f"{filename}: {'; '.join(issues)}")
+                (target / filename).write_text(body, encoding="utf-8")
+            manifest.completed("generate", "Generated and validated three notebook bodies")
+        else:
+            click.echo("[resume] generation already completed")
+
+        checks = run_checks(root, online=to_fabric)
+        blockers = [
+            check for check in checks
+            if check.status == "fail" and (to_fabric or check.name != "azure_cli")
+        ]
+        if blockers:
+            raise ValueError("; ".join(f"{check.name}: {check.message}" for check in blockers))
+        manifest.completed("preflight", "Local preflight passed")
+
+        if not to_fabric:
+            click.secho("Local migration artifacts are ready. Use --to-fabric --yes to deploy.", fg="green")
+            return
+        if not yes:
+            raise click.ClickException("Fabric writes require explicit approval with --yes.")
+
+        ctx = click.get_current_context()
+        if manifest.should_run("provision"):
+            ctx.invoke(provision, lakehouse_name=None)
+            manifest.completed("provision", "Lakehouse ready")
+        if manifest.should_run("upload"):
+            ctx.invoke(upload, local_dir=inputs_dir, remote_prefix="Input")
+            manifest.completed("upload", "Inputs uploaded")
+        if manifest.should_run("deploy"):
+            ctx.invoke(deploy, notebooks_dir="notebooks", prefix="Nb", pipeline_name=None,
+                       ir_path="ir.json", no_parameters=False)
+            manifest.completed("deploy", "Notebooks and pipeline deployed")
+        if run_pipeline and manifest.should_run("run"):
+            ctx.invoke(run, pipeline_name=None, timeout=1800, params=())
+            manifest.completed("run", "Pipeline completed")
+        if run_pipeline and manifest.should_run("validate"):
+            references = Path(reference_dir)
+            reference_files = [path for path in references.rglob("*") if path.is_file()] if references.is_dir() else []
+            if not reference_files:
+                manifest.mark("validate", "skipped", "No reference outputs were supplied")
+                click.secho("Validation skipped: no reference outputs were found.", fg="yellow")
+            else:
+                ctx.invoke(download, remote_path="Files/Output", out_dir=outputs_dir)
+                results = diff_folders(reference_dir, outputs_dir, atol=atol)
+                click.echo(format_report(results))
+                if not all(result.passed for result in results):
+                    raise ValueError("Fabric output parity validation failed.")
+                manifest.completed("validate", f"Validated {len(results)} output file(s)")
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        active = next((stage for stage in ("parse", "plan", "generate", "preflight", "provision", "upload", "deploy", "run")
+                       if manifest.should_run(stage)), "preflight")
+        manifest.failed(active, exc)
+        raise click.ClickException(str(exc)) from exc
 
 
 @main.command()
