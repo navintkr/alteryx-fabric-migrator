@@ -23,7 +23,7 @@ jobs:
           cache: pip
 
       - name: Install build and test dependencies
-        run: python -m pip install --upgrade build pytest ruff twine
+        run: python -m pip install --upgrade build twine ".[dev]"
 
       - name: Verify tag matches package version
         shell: python
