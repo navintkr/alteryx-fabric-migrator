@@ -11,67 +11,60 @@ A toolkit for migrating Alteryx workflows (`.yxmd`) to Microsoft Fabric (Lakehou
 ## How it works
 
 ```mermaid
-flowchart TD
-    subgraph IN["Inputs"]
-        direction LR
-        YXMD["Alteryx .yxmd"]
-        DATA["Source files<br/>CSV / Excel"]
-        REF["Alteryx reference<br/>outputs"]
-    end
+flowchart LR
+    START["Alteryx .yxmd<br/>+ sources + reference"]
 
-    subgraph LOCAL["Local · deterministic a2f CLI"]
+    subgraph LOCAL["Local — a2f CLI"]
         direction TB
         PARSE["parse → ir.json"]
-        PLAN["plan → risk + confidence"]
-        GATE{"Manual or<br/>high-risk?"}
-        APPROVE["Engineer approval"]
-        GEN["generate<br/>Bronze · Silver · Gold"]
-        VALID["validate bodies<br/>syntax · placeholders"]
+        PLAN["plan → risk"]
+        GATE{"High-risk?"}
+        APPROVE["Approve"]
+        GEN["generate B·S·G"]
+        VALID["validate bodies"]
+        PARSE --> PLAN --> GATE
+        GATE -->|no| GEN
+        GATE -->|yes| APPROVE --> GEN
+        GEN --> VALID
     end
 
-    subgraph FAB["Microsoft Fabric · after approval"]
+    subgraph FAB["Fabric — after approval"]
         direction TB
-        PRE["preflight<br/>auth · workspace · lakehouse"]
-        DEPLOY["deploy notebooks<br/>+ Data Pipeline"]
-        RUN["run pipeline<br/>Bronze → Silver → Gold"]
+        PRE["preflight"]
+        DEPLOY["deploy + pipeline"]
+        RUN["run B→S→G"]
         OUT[("OneLake<br/>Files/Output")]
+        PRE --> DEPLOY --> RUN --> OUT
     end
 
     subgraph CHECK["Parity"]
         direction TB
-        CMP{"Match Alteryx<br/>outputs?"}
-        DONE(["Migration complete"])
+        CMP{"Match<br/>reference?"}
+        DONE(["Complete"])
         FIX["diagnose + fix"]
+        CMP -->|yes| DONE
+        CMP -->|no| FIX
     end
 
-    COPILOT["Optional: Copilot agent<br/>skill + Fabric Spark skills"]
+    START --> PARSE
+    VALID --> PRE
+    OUT --> CMP
+    FIX -->|regenerate| GEN
+    VALID -. resume .-> PARSE
 
-    YXMD --> PARSE --> PLAN --> GATE
-    GATE -->|no| GEN
-    GATE -->|yes| APPROVE --> GEN
-    DATA --> GEN --> VALID --> PRE
-    PRE --> DEPLOY --> RUN --> OUT --> CMP
-    REF --> CMP
-    CMP -->|yes| DONE
-    CMP -->|no| FIX -->|regenerate| GEN
-
-    COPILOT -. assists .-> GEN
-    COPILOT -. diagnoses .-> FIX
-    VALID -. "resume state · .a2f/migration.json" .-> PARSE
-
-    classDef in fill:#eef2f7,stroke:#5b6b7f,color:#1b2733;
+    classDef start fill:#eef2f7,stroke:#5b6b7f,color:#1b2733;
     classDef local fill:#e6f2ff,stroke:#1f77c0,color:#0f2a43;
     classDef fabric fill:#e7f6ec,stroke:#25873a,color:#123420;
     classDef gate fill:#fff3d4,stroke:#b7791f,color:#4a2c0a;
     classDef done fill:#d7f5e6,stroke:#12855a,color:#0e3a2b;
     classDef repair fill:#ffe7e4,stroke:#c0443a,color:#48150f;
 
-    class YXMD,DATA,REF in;
+    class START start;
     class PARSE,PLAN,GEN,VALID,APPROVE local;
     class PRE,DEPLOY,RUN,OUT fabric;
     class GATE,CMP gate;
     class DONE done;
-    class FIX,COPILOT repair;
+    class FIX repair;
 ```
 
 The CLI owns deterministic and auditable operations. Copilot is optional: it reads the same plan and migration state, applies the repository skill when judgment is required, and delegates Fabric notebook authoring or failed-run diagnosis to the matching Fabric skills. Every guided migration is resumable because completed stages and the source workflow fingerprint are persisted in `.a2f/migration.json`.
