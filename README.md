@@ -12,57 +12,22 @@ A toolkit for migrating Alteryx workflows (`.yxmd`) to Microsoft Fabric (Lakehou
 
 ```mermaid
 flowchart LR
-    START["Alteryx .yxmd<br/>+ sources + reference"]
+    A["Alteryx .yxmd"] --> P["parse → plan"] --> G{"high-risk?"}
+    G -->|no| GEN["generate + validate"]
+    G -->|yes| AP["approve"] --> GEN
+    GEN --> DEP["deploy + run<br/>(Fabric)"] --> CMP{"match ref?"}
+    CMP -->|yes| DONE(["done"])
+    CMP -->|no| FIX["fix"] --> GEN
 
-    subgraph LOCAL["Local — a2f CLI"]
-        direction TB
-        PARSE["parse → ir.json"]
-        PLAN["plan → risk"]
-        GATE{"High-risk?"}
-        APPROVE["Approve"]
-        GEN["generate B·S·G"]
-        VALID["validate bodies"]
-        PARSE --> PLAN --> GATE
-        GATE -->|no| GEN
-        GATE -->|yes| APPROVE --> GEN
-        GEN --> VALID
-    end
-
-    subgraph FAB["Fabric — after approval"]
-        direction TB
-        PRE["preflight"]
-        DEPLOY["deploy + pipeline"]
-        RUN["run B→S→G"]
-        OUT[("OneLake<br/>Files/Output")]
-        PRE --> DEPLOY --> RUN --> OUT
-    end
-
-    subgraph CHECK["Parity"]
-        direction TB
-        CMP{"Match<br/>reference?"}
-        DONE(["Complete"])
-        FIX["diagnose + fix"]
-        CMP -->|yes| DONE
-        CMP -->|no| FIX
-    end
-
-    START --> PARSE
-    VALID --> PRE
-    OUT --> CMP
-    FIX -->|regenerate| GEN
-    VALID -. resume .-> PARSE
-
-    classDef start fill:#eef2f7,stroke:#5b6b7f,color:#1b2733;
-    classDef local fill:#e6f2ff,stroke:#1f77c0,color:#0f2a43;
+    classDef step fill:#e6f2ff,stroke:#1f77c0,color:#0f2a43;
     classDef fabric fill:#e7f6ec,stroke:#25873a,color:#123420;
     classDef gate fill:#fff3d4,stroke:#b7791f,color:#4a2c0a;
     classDef done fill:#d7f5e6,stroke:#12855a,color:#0e3a2b;
     classDef repair fill:#ffe7e4,stroke:#c0443a,color:#48150f;
 
-    class START start;
-    class PARSE,PLAN,GEN,VALID,APPROVE local;
-    class PRE,DEPLOY,RUN,OUT fabric;
-    class GATE,CMP gate;
+    class A,P,GEN,AP step;
+    class DEP fabric;
+    class G,CMP gate;
     class DONE done;
     class FIX repair;
 ```
